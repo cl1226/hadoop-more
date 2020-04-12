@@ -270,9 +270,193 @@
 
    MapOutputBuffer使用的是环形缓冲区：
 
-   ##### TODO
+   1. 线性字节数组
+
+   2. 两端方向放KV、索引（固定宽度：4个int）
+
+   3. 数据存储结构：
+
+      1. P	分区信息
+      2. K    KEY信息
+      3. V    VALUE信息
+
+   4. 如果数据填充到阈值：80%，启动线程
+
+      1. 快速排序80%数据，同时map输出的线程向剩余的空间写
+      2. 快速排序的过程：是比较key排序，但是移动的是索引
+
+   5. 溢写
+
+      根据索引的排序溢写数据，排序是二次排序，第一次是P排序保证相同key进到相同的分区中，第二次是key排序，相同P中的key是有序的为了保证后续reduce任务一次IO即可解决所有数据
+
+   ###### MapOutputBuffer初始化过程
+
+   ​	spillper = 0.8
+
+   ```java
+   final float spillper =
+     job.getFloat(JobContext.MAP_SORT_SPILL_PERCENT, (float)0.8);
+   ```
+
+   ​	sortmb = 100M
+
+   ```java
+   final int sortmb = job.getInt(JobContext.IO_SORT_MB, 100);
+   ```
+
+   ​	sorter = QuickSort
+
+   ```java
+   sorter = ReflectionUtils.newInstance(job.getClass("map.sort.class",
+         QuickSort.class, IndexedSorter.class), job);
+   ```
+
+   ​	comparator = job.getOutputKeyComparator();
+
+   ```java
+   // 优先取用户覆盖的自定义排序比较器
+   // 保底取key这个类型自身的比较器
+   comparator = job.getOutputKeyComparator();
+   ```
+
+   ​	SpillThread
+
+   ​		sortAndSpill()
+
+   ```java
+   if (combinerRunner == null) {
+     // spill directly
+     DataInputBuffer key = new DataInputBuffer();
+     while (spindex < mend &&
+         kvmeta.get(offsetFor(spindex % maxRec) + PARTITION) == i) {
+       final int kvoff = offsetFor(spindex % maxRec);
+       int keystart = kvmeta.get(kvoff + KEYSTART);
+       int valstart = kvmeta.get(kvoff + VALSTART);
+       key.reset(kvbuffer, keystart, valstart - keystart);
+       getVBytesForOffset(kvoff, value);
+       writer.append(key, value);
+       ++spindex;
+     }
+   } else {
+     int spstart = spindex;
+     while (spindex < mend &&
+         kvmeta.get(offsetFor(spindex % maxRec)
+                   + PARTITION) == i) {
+       ++spindex;
+     }
+     // Note: we would like to avoid the combiner if we've fewer
+     // than some threshold of records for a partition
+     if (spstart != spindex) {
+       combineCollector.setWriter(writer);
+       RawKeyValueIterator kvIter =
+         new MRResultIterator(spstart, spindex);
+       combinerRunner.combine(kvIter, combineCollector);
+     }
+   }
+   ```
 
 ### ReduceTask
 
-	##### TODO
+1. 如果是yarn资源管理器，则是通过YarnChild类启动ReduceTask任务，前置步骤跟上面MapTask一样
 
+   ```java
+   // 通过配置项mapred.combiner.class取combinerClass否则为空，同时检测该类是否为Reduce.class的子类
+   Class combinerClass = conf.getCombinerClass();
+   // 通过上线combinerClass生成combineCollector
+   CombineOutputCollector combineCollector = 
+     (null != combinerClass) ? 
+    new CombineOutputCollector(reduceCombineOutputCounter, reporter, conf) : null;
+   ```
+
+2. 执行shuffle过程
+
+   ```java
+   ShuffleConsumerPlugin.Context shuffleContext = 
+     new ShuffleConsumerPlugin.Context(getTaskID(), job, FileSystem.getLocal(job), umbilical, 
+                 super.lDirAlloc, reporter, codec, 
+                 combinerClass, combineCollector, 
+                 spilledRecordsCounter, reduceCombineInputCounter,
+                 shuffledMapsCounter,
+                 reduceShuffleBytes, failedShuffleCounter,
+                 mergedMapOutputsCounter,
+                 taskStatus, copyPhase, sortPhase, this,
+                 mapOutputFile, localMapFiles);
+   shuffleConsumerPlugin.init(shuffleContext);
+   
+   rIter = shuffleConsumerPlugin.run();
+   ```
+
+3. 如果不是local模式，通过Fetcher类实现shuffle的过程
+
+   ```java
+   // If merge is on, block
+   merger.waitForResource();
+   
+   // Get a host to shuffle from
+   host = scheduler.getHost();
+   metrics.threadBusy();
+   
+   // Shuffle
+   copyFromHost(host);
+   ```
+
+4. 创建taskContext任务上下文、创建reducer、创建RecordWriter
+
+3. ```java
+   try {
+     // 一组数据调用一次reduce
+     while (context.nextKey()) {
+       reduce(context.getCurrentKey(), context.getValues(), context);
+       // If a back up store is used, reset it
+       Iterator<VALUEIN> iter = context.getValues().iterator();
+       if(iter instanceof ReduceContext.ValueIterator) {
+         ((ReduceContext.ValueIterator<VALUEIN>)iter).resetBackupStore();        
+       }
+     }
+   }
+   ```
+
+4. context.nextKey() 代码分析
+
+   ```java
+   // 首先数据通过shuffle根据map端生成K-V-P三元组其中的P，相同的P会拉到同一个reduce，而一个reduce中
+   // 可能会有多个key
+   // 判断hasMore为true且nextKeyIsSame表示还是同一组key的遍历，则继续取下一条数据
+   // 否则返回false，上一层迭代器会去取下一组的key，后面实现一样
+   while (hasMore && nextKeyIsSame) {
+     nextKeyValue();
+   }
+   if (hasMore) {
+     if (inputKeyCounter != null) {
+       inputKeyCounter.increment(1);
+     }
+     return nextKeyValue();
+   } else {
+     return false;
+   }
+   ```
+
+##### 总结
+
+1. MR框架中充分利用了迭代器模式：避免将数据拉到内存中造成OOM
+
+2. 计算向数据移动：在client提交任务时，组装好conf文件，文件中包含split信息（file、offset、length、hosts）、资源文件路径（jar包在hdfs中的位置信息），发起计算时datanode会通过配置信息拉取jar包，计算本地file
+
+3. InputFormat、RecordReader、RecordWriter
+
+4. MapOutputBuffer map端溢写数据
+
+5. 比较器选择
+
+   | mapTask                   | reduceTask                |
+   | ------------------------- | ------------------------- |
+   |                           | 1、用户自定义的分组比较器 |
+   | 1、用户自定义的排序比较器 | 2、用户定义的排序比较器   |
+   | 2、KEY自身的排序比较器    | 3、KEY自身的排序比较器    |
+
+   | 组合方式：             | map                    | reduce                   |
+   | :--------------------- | :--------------------- | ------------------------ |
+   | 不设置排序和分组比较器 | 取key自身的排序比较器  | 取key自身的排序比较器    |
+   | 设置了排序             | 用户定义的排序比较器   | 用户定义的排序比较器     |
+   | 设置了分组             | 取key自身的排序比较器  | 取用户自定义的分组比较器 |
+   | 设置了排序和分组       | 取用户定义的排序比较器 | 取用户自定义的分组比较器 |
