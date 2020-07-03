@@ -22,7 +22,7 @@ public class HBaseDAOImpl {
 
     public HBaseDAOImpl() {
         conf = new Configuration();
-        String zk_list = "node02,node03,node04";
+        String zk_list = "192.168.41.117";
         conf.set("hbase.zookeeper.quorum", zk_list);
         try {
             conn = ConnectionFactory.createConnection(conf);

@@ -1,0 +1,45 @@
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="">
+  <meta name="author" content="">
+  <title>Sign in</title>
+  <link rel="stylesheet" th:href="@{/webjars/bootstrap/4.5.0/css/bootstrap.min.css}" />
+</head>
+
+<body>
+  <div class="container">
+    <form class="form-horizontal">
+      <div class="form-group">
+        <label for="username" class="col-sm-2 control-label">[[#{login.username}]]</label>
+        <div class="col-sm-10">
+          <input type="text" class="form-control" id="username" th:placeholder="#{login.username}">
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="password" class="col-sm-2 control-label">[[#{login.password}]]</label>
+        <div class="col-sm-10">
+          <input type="password" class="form-control" id="password" th:placeholder="#{login.password}">
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="col-sm-offset-2 col-sm-10">
+          <div class="checkbox">
+            <label>
+              <input type="checkbox"> [[#{login.remember}]]
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <div class="col-sm-offset-2 col-sm-10">
+          <button type="submit" class="btn btn-default">[[#{login.btn}]]</button>
+        </div>
+      </div>
+    </form>
+    <a class="btn btn-sm" th:href="@{/login(l='zh_CN')}">中文</a>
+    <a class="btn btn-sm" th:href="@{/login(l='en_US')}">English</a>
+  </div>
+</body>
+</html>
