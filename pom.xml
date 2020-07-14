@@ -14,8 +14,6 @@
       <module>hbase</module>
       <module>zookeeper</module>
       <module>spark</module>
-      <module>java-coder</module>
-        <module>SpringMVC-Test</module>
     </modules>
 
     <name>hadoop-more</name>
